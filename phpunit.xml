@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+         stopOnFailure="false">
+    <testsuites>
+        <!-- 全テスト実行用 -->
+        <testsuite name="Unit">
+            <directory>tests/Unit</directory>
+        </testsuite>
+        <testsuite name="Feature">
+            <directory>tests/Feature</directory>
+        </testsuite>
+
+        <!-- 並列実行用：シャード分割 -->
+        <testsuite name="shard-1">
+            <file>tests/Unit/UserServiceTest.php</file>
+            <file>tests/Unit/OrderServiceTest.php</file>
+        </testsuite>
+        <testsuite name="shard-2">
+            <file>tests/Unit/PaymentServiceTest.php</file>
+            <file>tests/Unit/NotificationServiceTest.php</file>
+        </testsuite>
+        <testsuite name="shard-3">
+            <file>tests/Unit/InventoryServiceTest.php</file>
+            <file>tests/Unit/ReportServiceTest.php</file>
+        </testsuite>
+    </testsuites>
+    <source>
+        <include>
+            <directory>app</directory>
+        </include>
+    </source>
+</phpunit>

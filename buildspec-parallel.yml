@@ -1,0 +1,54 @@
+version: 0.2
+
+# ============================================
+# 並列実行版: testsuite 方式
+# ============================================
+# PHPUnitは複数ファイルを引数に取れないため、
+# codebuild-tests-run ではなく testsuite で分割
+
+batch:
+  fast-fail: false
+  build-fan-out:
+    parallelism: 3
+    # 環境変数 CODEBUILD_BATCH_BUILD_IDENTIFIER で
+    # 各ビルドを識別 (build-fan-out/0, build-fan-out/1, build-fan-out/2)
+
+phases:
+  install:
+    runtime-versions:
+      php: 8.2
+    commands:
+      - composer install --no-interaction --prefer-dist
+
+  build:
+    commands:
+      - |
+        # シャード番号を取得（0, 1, 2）
+        SHARD_INDEX=$(echo $CODEBUILD_BATCH_BUILD_IDENTIFIER | grep -oE '[0-9]+$')
+        SHARD_NUM=$((SHARD_INDEX + 1))
+        echo "Running shard-${SHARD_NUM}..."
+        vendor/bin/phpunit --testsuite "shard-${SHARD_NUM}" --log-junit "reports/junit-shard-${SHARD_NUM}.xml"
+
+  post_build:
+    commands:
+      # ⚠️ 注意: post_buildは全シャードで実行される
+      # 条件分岐で最後のシャードのみ実行するか、
+      # 別のオーケストレーション層で制御が必要
+      - |
+        SHARD_INDEX=$(echo $CODEBUILD_BATCH_BUILD_IDENTIFIER | grep -oE '[0-9]+$')
+        if [ "$SHARD_INDEX" = "0" ]; then
+          echo "Shard 0: Would trigger notification here (only once)"
+          # aws sns publish --topic-arn $SNS_TOPIC --message "All tests completed"
+        else
+          echo "Shard ${SHARD_INDEX}: Skipping notification (handled by shard 0)"
+        fi
+
+reports:
+  phpunit-reports:
+    files:
+      - "reports/junit-*.xml"
+    file-format: JUNITXML
+
+cache:
+  paths:
+    - vendor/**/*
