@@ -1,6 +1,28 @@
 # CodeBuild 並列テスト実行 検証プロジェクト
 
-CodeBuild の並列実行機能（batch build-fan-out）を使って、PHPUnit のテスト実行時間を短縮する検証用プロジェクト。
+CodeBuild の Batch ビルド機能（build-list）を使って、PHPUnit のテスト実行時間を短縮する検証用プロジェクト。
+
+## なぜ build-fan-out + codebuild-tests-run を使わないのか？
+
+CodeBuild には `build-fan-out` + `codebuild-tests-run` という動的テスト分割の仕組みがある。
+Jest や pytest では便利に使えるが、PHPUnit では以下の理由で素直に使えない。
+
+```bash
+# codebuild-tests-run はファイルリストを返す
+$ codebuild-tests-run --test-file-pattern 'tests/**/*Test.php'
+tests/Unit/UserServiceTest.php
+tests/Unit/OrderServiceTest.php
+
+# Jest/pytest: そのまま引数に渡せる ✅
+jest tests/Unit/UserServiceTest.js tests/Unit/OrderServiceTest.js
+
+# PHPUnit: 複数ファイルを引数に取れない ❌
+vendor/bin/phpunit tests/Unit/UserServiceTest.php tests/Unit/OrderServiceTest.php
+# → 最初のファイルしか実行されない
+```
+
+`--filter` オプションで正規表現に変換すれば可能だが、ハック的になるため、
+本プロジェクトでは `build-list` + `testsuite` による静的分割方式を採用している。
 
 ## 構成
 
@@ -9,8 +31,8 @@ CodeBuild の並列実行機能（batch build-fan-out）を使って、PHPUnit �
 ├── composer.json
 ├── phpunit.xml              # testsuite 定義（シャード分割）
 ├── buildspec.yml            # 通常版（Before計測用）
-├── buildspec-parallel.yml   # 並列版: testsuite 方式
-├── buildspec-parallel-filter.yml  # 並列版: --filter 方式
+├── buildspec-parallel.yml   # 並列版: build-list + testsuite 方式
+├── docker-compose.yml       # ローカル動作確認用
 └── tests/
     └── Unit/
         ├── UserServiceTest.php         (7秒)
@@ -38,7 +60,22 @@ shard-3: InventoryServiceTest + ReportServiceTest → 約15秒
 
 ## 使い方
 
-### ローカルでテスト実行
+### Docker でテスト実行（推奨）
+
+```bash
+# 依存インストール
+docker compose run --rm composer
+
+# 全テスト実行（約43秒）
+time docker compose run --rm php
+
+# シャード別実行
+time docker compose run --rm php vendor/bin/phpunit --testsuite shard-1
+time docker compose run --rm php vendor/bin/phpunit --testsuite shard-2
+time docker compose run --rm php vendor/bin/phpunit --testsuite shard-3
+```
+
+### ローカルでテスト実行（PHP/Composerがある場合）
 
 ```bash
 # 依存インストール
@@ -60,9 +97,9 @@ composer test:shard3
    - Batch build: 無効
 
 2. **並列版（After）**
-   - buildspec: `buildspec-parallel.yml` または `buildspec-parallel-filter.yml`
+   - buildspec: `buildspec-parallel.yml`
    - Batch build: 有効
-   - Compute type: 各シャードで独立して指定
+   - サービスロールに `codebuild:StartBuild` 権限が必要
 
 ## PHPUnit + CodeBuild 並列化の注意点
 
@@ -76,8 +113,7 @@ post_build:
     
     # ✅ シャード番号で条件分岐
     - |
-      SHARD_INDEX=$(echo $CODEBUILD_BATCH_BUILD_IDENTIFIER | grep -oE '[0-9]+$')
-      if [ "$SHARD_INDEX" = "0" ]; then
+      if [ "${SHARD_NUM}" = "1" ]; then
         aws sns publish --message "Build completed"
       fi
 ```
@@ -85,15 +121,14 @@ post_build:
 ### 2. PHPUnit は複数ファイルを引数に取れない
 
 ```bash
-# ❌ これはできない
+# ❌ これはできない（最初のファイルのみ実行される）
 vendor/bin/phpunit tests/Unit/UserTest.php tests/Unit/OrderTest.php
 
-# ✅ 方式A: testsuite で分割
+# ✅ testsuite で分割
 vendor/bin/phpunit --testsuite shard-1
-
-# ✅ 方式B: --filter で絞り込み
-vendor/bin/phpunit --filter "(UserServiceTest|OrderServiceTest)"
 ```
+
+このため、`codebuild-tests-run` による動的分割は PHPUnit では使いにくい。
 
 ### 3. コスト
 
@@ -104,4 +139,4 @@ vendor/bin/phpunit --filter "(UserServiceTest|OrderServiceTest)"
 ## 参考リンク
 
 - [AWS CodeBuild batch builds](https://docs.aws.amazon.com/codebuild/latest/userguide/batch-build.html)
-- [codebuild-tests-run CLI](https://docs.aws.amazon.com/codebuild/latest/userguide/test-splitting.html)
+- [codebuild-tests-run CLI](https://docs.aws.amazon.com/codebuild/latest/userguide/test-splitting.html) ※PHPUnitでは使いにくい
