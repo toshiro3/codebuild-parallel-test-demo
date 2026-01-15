@@ -1,19 +1,6 @@
 version: 0.2
 
-# =============================================================================
-# PHPUnit 並列実行: build-list + testsuite 方式
-# =============================================================================
-#
-# なぜ build-fan-out + codebuild-tests-run を使わないのか？
-# ---------------------------------------------------------
-# codebuild-tests-run はテストファイルのリストを返すが、
-# PHPUnit は複数ファイルを引数に取れない。
-#   ❌ vendor/bin/phpunit tests/A.php tests/B.php  → 最初のファイルのみ実行
-#
-# Jest や pytest なら素直に使えるが、PHPUnit では --filter への変換が必要で
-# ハック的になるため、testsuite で事前に分割する方式を採用。
-#
-# =============================================================================
+# 並列実行: build-list + testsuite 方式（静的分割）
 
 batch:
   fast-fail: false
@@ -41,25 +28,11 @@ phases:
   build:
     commands:
       - echo "Running shard-${SHARD_NUM}..."
-      - mkdir -p reports
-      - vendor/bin/phpunit --testsuite "shard-${SHARD_NUM}" --log-junit "reports/junit-shard-${SHARD_NUM}.xml"
+      - vendor/bin/phpunit --testsuite "shard-${SHARD_NUM}"
 
   post_build:
     commands:
-      # post_build は全シャードで実行される
-      # 通知やデプロイは特定シャードでのみ実行するよう条件分岐が必要
-      - |
-        if [ "${SHARD_NUM}" = "1" ]; then
-          echo "Shard 1: Notification would be triggered here"
-        else
-          echo "Shard ${SHARD_NUM}: Skipping notification"
-        fi
-
-reports:
-  phpunit-reports:
-    files:
-      - "reports/junit-*.xml"
-    file-format: JUNITXML
+      - echo "Shard ${SHARD_NUM} completed"
 
 cache:
   paths:

@@ -1,5 +1,7 @@
 version: 0.2
 
+# 直列実行（ベースライン計測用）
+
 phases:
   install:
     runtime-versions:
@@ -14,15 +16,7 @@ phases:
 
   post_build:
     commands:
-      - echo "Test completed at $(date)"
-      # ここにSlack通知やデプロイ処理を書く想定
-      # - aws sns publish --topic-arn $SNS_TOPIC --message "Build completed"
-
-reports:
-  phpunit-reports:
-    files:
-      - "reports/junit.xml"
-    file-format: JUNITXML
+      - echo "Test completed"
 
 cache:
   paths:

@@ -1,5 +1,7 @@
 version: 0.2
 
+# 並列実行: build-fanout + ラッパースクリプト方式（動的分割）
+
 batch:
   fast-fail: false
   build-fanout:
@@ -23,7 +25,7 @@ phases:
 
   post_build:
     commands:
-      - echo "Test execution completed"
+      - echo "Test completed"
 
 cache:
   paths:
