@@ -1,66 +1,72 @@
-# CodeBuild 並列テスト実行 検証プロジェクト
+# CodeBuild Batch で PHPUnit を並列実行する検証
 
-CodeBuild の Batch ビルド機能（build-list）を使って、PHPUnit のテスト実行時間を短縮する検証用プロジェクト。
-
-## なぜ build-fan-out + codebuild-tests-run を使わないのか？
-
-CodeBuild には `build-fan-out` + `codebuild-tests-run` という動的テスト分割の仕組みがある。
-Jest や pytest では便利に使えるが、PHPUnit では以下の理由で素直に使えない。
-
-```bash
-# codebuild-tests-run はファイルリストを返す
-$ codebuild-tests-run --test-file-pattern 'tests/**/*Test.php'
-tests/Unit/UserServiceTest.php
-tests/Unit/OrderServiceTest.php
-
-# Jest/pytest: そのまま引数に渡せる ✅
-jest tests/Unit/UserServiceTest.js tests/Unit/OrderServiceTest.js
-
-# PHPUnit: 複数ファイルを引数に取れない ❌
-vendor/bin/phpunit tests/Unit/UserServiceTest.php tests/Unit/OrderServiceTest.php
-# → 最初のファイルしか実行されない
-```
-
-`--filter` オプションで正規表現に変換すれば可能だが、ハック的になるため、
-本プロジェクトでは `build-list` + `testsuite` による静的分割方式を採用している。
+CodeBuild の Batch ビルド機能を使って、PHPUnit のテスト実行時間を短縮できるか検証するプロジェクト。
 
 ## 構成
 
 ```
 .
-├── composer.json
-├── phpunit.xml              # testsuite 定義（シャード分割）
-├── buildspec.yml            # 通常版（Before計測用）
-├── buildspec-parallel.yml   # 並列版: build-list + testsuite 方式
-├── docker-compose.yml       # ローカル動作確認用
+├── buildspec.yml              # 通常版（直列実行）
+├── buildspec-parallel.yml     # 並列版: build-list + testsuite 方式
+├── buildspec-fanout.yml       # 並列版: build-fanout + ラッパースクリプト方式
+├── phpunit.xml                # testsuite 定義（静的分割用）
+├── phpunit.template.xml       # 動的生成用テンプレート
+├── run_parallel_phpunit.sh    # PHPUnit実行ラッパースクリプト
+├── docker-compose.yml         # ローカル動作確認用
 └── tests/
     └── Unit/
-        ├── UserServiceTest.php         (7秒)
-        ├── OrderServiceTest.php         (7秒)
-        ├── PaymentServiceTest.php       (7秒)  
-        ├── NotificationServiceTest.php  (7秒)
-        ├── InventoryServiceTest.php     (7秒)
-        └── ReportServiceTest.php        (8秒)
+        ├── UserServiceTest.php
+        ├── OrderServiceTest.php
+        ├── PaymentServiceTest.php
+        ├── NotificationServiceTest.php
+        ├── InventoryServiceTest.php
+        └── ReportServiceTest.php
 ```
 
-## テスト所要時間（予測）
+## 並列化の方式
 
-| 実行方式 | 所要時間 | 備考 |
-|---------|---------|------|
-| 通常（直列） | 約43秒 | 全テスト順次実行 |
-| 並列（3シャード） | 約14-15秒 | 最も遅いシャードに依存 |
+### 方式1: build-list + testsuite（静的分割）
 
-## シャード分割
+`phpunit.xml` に testsuite を事前定義し、各シャードで実行する方式。
 
+```yaml
+# buildspec-parallel.yml
+batch:
+  build-list:
+    - identifier: shard_1
+      env:
+        variables:
+          SHARD_NUM: "1"
+    - identifier: shard_2
+      env:
+        variables:
+          SHARD_NUM: "2"
 ```
-shard-1: UserServiceTest + OrderServiceTest      → 約14秒
-shard-2: PaymentServiceTest + NotificationServiceTest → 約14秒  
-shard-3: InventoryServiceTest + ReportServiceTest → 約15秒
+
+シンプルだが、テストファイル追加時に `phpunit.xml` のメンテナンスが必要。
+
+### 方式2: build-fanout + ラッパースクリプト（動的分割）
+
+`codebuild-tests-run` でファイルを動的分割し、ラッパースクリプトで `phpunit.xml` を生成する方式。
+
+```yaml
+# buildspec-fanout.yml
+batch:
+  build-fanout:
+    parallelism: 3
+
+phases:
+  build:
+    commands:
+      - |
+        codebuild-tests-run \
+          --test-command "./run_parallel_phpunit.sh" \
+          --files-search "codebuild-glob-search 'tests/**/*Test.php'"
 ```
 
-## 使い方
+PHPUnit は複数ファイルを引数に取れないため、ラッパースクリプトで動的に `phpunit.xml` を生成して回避する。
 
-### Docker でテスト実行（推奨）
+## ローカルでの動作確認
 
 ```bash
 # 依存インストール
@@ -71,72 +77,130 @@ time docker compose run --rm php
 
 # シャード別実行
 time docker compose run --rm php vendor/bin/phpunit --testsuite shard-1
-time docker compose run --rm php vendor/bin/phpunit --testsuite shard-2
-time docker compose run --rm php vendor/bin/phpunit --testsuite shard-3
 ```
 
-### ローカルでテスト実行（PHP/Composerがある場合）
+## CodeBuild での実行（AWS CLI）
+
+### IAMロールの作成
 
 ```bash
-# 依存インストール
-composer install
+# 信頼ポリシーを作成
+cat > trust-policy.json << 'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "codebuild.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
 
-# 全テスト実行
-composer test
+# IAMロールを作成
+aws iam create-role \
+  --role-name codebuild-parallel-test-role \
+  --assume-role-policy-document file://trust-policy.json
 
-# シャード別実行
-composer test:shard1
-composer test:shard2
-composer test:shard3
+# 権限ポリシーを作成
+cat > codebuild-policy.json << 'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "codebuild:StartBuild",
+        "codebuild:StopBuild",
+        "codebuild:BatchGetBuilds"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+EOF
+
+# ポリシーをアタッチ
+aws iam put-role-policy \
+  --role-name codebuild-parallel-test-role \
+  --policy-name codebuild-parallel-test-policy \
+  --policy-document file://codebuild-policy.json
 ```
 
-### CodeBuild での実行
+### CodeBuildプロジェクトの作成
 
-1. **通常版（Before）**
-   - buildspec: `buildspec.yml`
-   - Batch build: 無効
+```bash
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
-2. **並列版（After）**
-   - buildspec: `buildspec-parallel.yml`
-   - Batch build: 有効
-   - サービスロールに `codebuild:StartBuild` 権限が必要
+aws codebuild create-project \
+  --name codebuild-parallel-test-fanout \
+  --source '{
+    "type": "GITHUB",
+    "location": "https://github.com/<your-username>/codebuild-parallel-test-demo",
+    "buildspec": "buildspec-fanout.yml"
+  }' \
+  --artifacts '{"type": "NO_ARTIFACTS"}' \
+  --environment '{
+    "type": "LINUX_CONTAINER",
+    "image": "aws/codebuild/amazonlinux-x86_64-standard:5.0",
+    "computeType": "BUILD_GENERAL1_SMALL"
+  }' \
+  --service-role "arn:aws:iam::${AWS_ACCOUNT_ID}:role/codebuild-parallel-test-role"
+```
 
-## PHPUnit + CodeBuild 並列化の注意点
+### バッチビルドの実行
 
-### 1. post_build が全シャードで実行される
+```bash
+aws codebuild start-build-batch \
+  --project-name codebuild-parallel-test-fanout
+```
+
+### 後片付け
+
+```bash
+# プロジェクト削除
+aws codebuild delete-project --name codebuild-parallel-test-fanout
+
+# IAMロール削除
+aws iam delete-role-policy \
+  --role-name codebuild-parallel-test-role \
+  --policy-name codebuild-parallel-test-policy
+
+aws iam delete-role --role-name codebuild-parallel-test-role
+```
+
+## 注意点
+
+### セットアップコストの考慮
+
+各シャードで独立して `composer install` が実行されるため、テスト時間が短い場合はセットアップコストで並列化のメリットが相殺される可能性がある。
+
+### post_build の挙動
+
+`post_build` は全シャードで実行されるため、通知処理などは条件分岐が必要。
 
 ```yaml
 post_build:
   commands:
-    # ❌ これだと3回通知される
-    - aws sns publish --message "Build completed"
-    
-    # ✅ シャード番号で条件分岐
     - |
       if [ "${SHARD_NUM}" = "1" ]; then
-        aws sns publish --message "Build completed"
+        # 通知処理
       fi
 ```
-
-### 2. PHPUnit は複数ファイルを引数に取れない
-
-```bash
-# ❌ これはできない（最初のファイルのみ実行される）
-vendor/bin/phpunit tests/Unit/UserTest.php tests/Unit/OrderTest.php
-
-# ✅ testsuite で分割
-vendor/bin/phpunit --testsuite shard-1
-```
-
-このため、`codebuild-tests-run` による動的分割は PHPUnit では使いにくい。
-
-### 3. コスト
-
-- 並列ビルドは各シャードが独立したビルドとして課金
-- 3並列 × 1分 = 3ビルド分のコスト
-- ただしトータル時間短縮による開発効率向上とトレードオフ
 
 ## 参考リンク
 
 - [AWS CodeBuild batch builds](https://docs.aws.amazon.com/codebuild/latest/userguide/batch-build.html)
-- [codebuild-tests-run CLI](https://docs.aws.amazon.com/codebuild/latest/userguide/test-splitting.html) ※PHPUnitでは使いにくい
+- [codebuild-tests-run CLI](https://docs.aws.amazon.com/codebuild/latest/userguide/test-splitting.html)

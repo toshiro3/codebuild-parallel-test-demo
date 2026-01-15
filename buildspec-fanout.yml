@@ -1,0 +1,30 @@
+version: 0.2
+
+batch:
+  fast-fail: false
+  build-fanout:
+    parallelism: 3
+
+phases:
+  install:
+    runtime-versions:
+      php: 8.2
+    commands:
+      - composer install --no-interaction --prefer-dist
+      - chmod +x run_parallel_phpunit.sh
+
+  build:
+    commands:
+      - echo "Starting parallel test execution..."
+      - |
+        codebuild-tests-run \
+          --test-command "./run_parallel_phpunit.sh" \
+          --files-search "codebuild-glob-search 'tests/**/*Test.php'"
+
+  post_build:
+    commands:
+      - echo "Test execution completed"
+
+cache:
+  paths:
+    - vendor/**/*
